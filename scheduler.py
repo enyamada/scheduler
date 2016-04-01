@@ -76,23 +76,20 @@ def update_db_req_data (job_id, req_id, req_state, req_status_code):
 
 def save_job_schedule (docker_image, stime, callback, env_vars):
 
-    # Collect the env vars if any was specified
-    env_vars_text = ""
-    if not env_vars is None:
-       for k,v in env_vars.iteritems():
-           env_vars_text = env_vars_text + k + "=" + v + "\n"
-
     cursor = Db.cursor()
 
-
+    print "** env_cars = %s " % env_vars
     # Try to insert the new schedule into the database. If it fails, return -1, otherwise, return the scheduled job id.
     try:
        if callback == "":
-          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ("%s", "%s", "scheduled", "%s" )' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars_text)
+          #sql = "INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ('%s', '%s', 'scheduled', '%s' )" % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars)
+          sql = "INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ('%s', '%s', 'scheduled', '%s' )" % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, MySQLdb.escape_string(env_vars))
        else:
-          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES ("%s", "%s", "scheduled", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars_text, callback)
+          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES ("%s", "%s", "scheduled", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars, callback)
 
-       cursor.execute (sql)
+       print "SQL=%s"  % sql
+       print "SQL2=%s" % MySQLdb.escape_string(sql)
+       cursor.execute ( sql )
 
     except Exception as e:
         print str(e)
@@ -145,6 +142,8 @@ def schedule_job():
        if type(json["env_vars"]) is dict:
           env_vars =  json["env_vars"]
 
+    # Convert the env vars to a notation format to be accepeted by docker ("-e 'X1=v1' -e 'X2=v2' etc)
+    env_vars = build_env_vars_docker_format (env_vars)
 
     job_id = save_job_schedule (json["docker_image"], stime, callback, env_vars )
     if job_id == -1:
@@ -326,11 +325,11 @@ def create_spot_instance(job_id, sched_time, docker_image, env_vars):
        "yum -y update\n"
        "yum install docker -y\n"
        "sudo service docker start\n"
-       "sudo docker run %s\n"
+       "sudo docker run %s %s\n"
        "touch /tmp/executing.txt\n"
        "sleep 180\n"
        "curl -i -H 'Content-Type: application/json'  'http://%s/v1/notifications/%s?status=finished' -X PUT\n"
-       % (my_own_name, job_id, docker_image, my_own_name, job_id)
+       % (my_own_name, job_id, env_vars, docker_image, my_own_name, job_id)
     )
 
 
@@ -504,6 +503,19 @@ def terminate_instance (job_id):
     cursor.execute ("UPDATE jobs SET status='done' WHERE id=%s" % job_id)
  
 
+
+def build_env_vars_docker_format (env_vars):
+
+    # env_vars is a hash
+
+    # Collect the env vars if any was specified
+    env_vars_parameter = ""
+    if not env_vars is None:
+       for k,v in env_vars.iteritems():
+           env_vars_parameter = env_vars_parameter + "-e '%s=%s' " % (k,v)
+
+
+    return env_vars_parameter
 
 
 if __name__ == '__main__':
