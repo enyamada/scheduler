@@ -9,6 +9,7 @@ import os
 import time
 
 import urllib2
+from urllib2 import HTTPError, URLError
 import boto3
 import MySQLdb
 
@@ -228,13 +229,14 @@ def process_notification (job_id):
 
     # Try to update
     try:
-       cursor = Db.cursor()
-       cursor.execute ("UPDATE jobs SET status='%s' WHERE id=%s" % (status, job_id))
+       update_db (job_id, status=status)
+
        if status == "finished":
            print ("*** Executing user callback function: %s ****" % callback(job_id))
-           print "*** Terminating spot instance ***"
            call_callback(job_id)
+           print "*** Terminating spot instance ***"
            terminate_instance(job_id)
+           update_db (job_id, status='done')
 
        return make_response(jsonify({'Success': 'Notification has been processed, status updated to %s' % status}), 200)
 
@@ -333,7 +335,7 @@ def create_spot_instance(job_id, sched_time, docker_image, env_vars):
 
 
     response = client.request_spot_instances (
-       SpotPrice     = '0.0102',
+       SpotPrice     = '0.012',
        InstanceCount = 1,
        Type          = 'one-time',
        ValidFrom     = sched_time,
@@ -505,6 +507,7 @@ def terminate_instance (job_id):
     cursor.execute ("UPDATE jobs SET status='done' WHERE id=%s" % job_id)
  
 
+
 def update_db (job_id, **kwargs):
 
     cursor = Db.cursor()
@@ -530,13 +533,16 @@ def call_callback (job_id):
         f = urllib2.urlopen(url)
         f.close()
     
-    except HTTPError, e:
-        print("Ocorreu um erro ao requisitar o conteudo do servidor!\n")
+    except Exception as e:
+        update_db (job_id, notes="Something went wrong when trying to callback %s: %s" % (url, e.message))
 
     
-    except URLError, e:
-        print("URL invalido!\n")
-        print("Mensagem: ", e.reason) 
+    except URLError as e:
+        print "Wrong url"
+        update_db (job_id, notes="Tried to callback %s but seems like an invalid url: %s" % (url, e.reason))
+
+    else: 
+	update_db (job_id, notes="Called back %s sucessfully at %s" % (url, datetime.now()))
 
 
 
