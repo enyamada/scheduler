@@ -8,6 +8,7 @@ import logging
 import os
 import time
 
+import urllib2
 import boto3
 import MySQLdb
 
@@ -66,7 +67,14 @@ def hello_world():
     return 'Hello World!'
 
 
-def save_job_schedule (docker_image, stime, callback, env_vars, req_id, req_state, req_status_code):
+
+def update_db_req_data (job_id, req_id, req_state, req_status_code):
+
+    cursor = Db.cursor()
+    cursor.execute ("UPDATE jobs SET req_id='%s', req_state='%s', req_status_code='%s' WHERE id=%s" % (req_id, req_state, req_status_code,  job_id))
+
+
+def save_job_schedule (docker_image, stime, callback, env_vars):
 
     # Collect the env vars if any was specified
     env_vars_text = ""
@@ -80,9 +88,9 @@ def save_job_schedule (docker_image, stime, callback, env_vars, req_id, req_stat
     # Try to insert the new schedule into the database. If it fails, return -1, otherwise, return the scheduled job id.
     try:
        if callback == "":
-          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, req_id, req_state, req_status_code) VALUES ("%s", "%s", "scheduled", "%s", "%s", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars_text, req_id, req_state, req_status_code)
+          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ("%s", "%s", "scheduled", "%s" )' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars_text)
        else:
-          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback, req_id, req_state, req_status_code) VALUES ("%s", "%s", "scheduled", "%s", "%s", "%s", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars_text, callback, req_id, req_state, req_status_code)
+          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES ("%s", "%s", "scheduled", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars_text, callback)
 
        cursor.execute (sql)
 
@@ -137,12 +145,14 @@ def schedule_job():
        if type(json["env_vars"]) is dict:
           env_vars =  json["env_vars"]
 
-    job_id = save_job_schedule (json["docker_image"], stime, callback, env_vars, req_id, req_state, req_status_code)
+
+    job_id = save_job_schedule (json["docker_image"], stime, callback, env_vars )
     if job_id == -1:
         return make_response(jsonify({'error': 'Something went wrong when attempting to save data into database'}), 500)
 
     # Schedule the spot instance
     [ req_id, req_state, req_status_code ] = create_spot_instance (job_id, stime, json["docker_image"], env_vars)
+    update_db_req_data (job_id, req_id, req_state, req_status_code)
 
     # Schedule the job to run at the specified date/time
     #scheduler.add_job(run_job, 'date', run_date=json["datetime"], args=[job_id])
@@ -305,18 +315,22 @@ def create_spot_instance(job_id, sched_time, docker_image, env_vars):
 
     client  = boto3.client('ec2')
 
+    # Get my own public fqdn by quering metadata
+    my_own_name = urllib2.urlopen("http://169.254.169.254/latest/meta-data/public-hostname").read()
+
+
     user_data = ( 
        b"#!/bin/bash\n"
        "touch /tmp/start.txt\n"
-       "curl -i -H 'Content-Type: application/json'  'http://ec2-54-233-149-166.sa-east-1.compute.amazonaws.com/v1/notifications/%s?status=started' -X PUT\n"
+       "curl -i -H 'Content-Type: application/json'  'http://%s/v1/notifications/%s?status=started' -X PUT\n"
        "yum -y update\n"
        "yum install docker -y\n"
        "sudo service docker start\n"
        "sudo docker run %s\n"
        "touch /tmp/executing.txt\n"
        "sleep 180\n"
-       "curl -i -H 'Content-Type: application/json'  'http://ec2-54-233-149-166.sa-east-1.compute.amazonaws.com/v1/notifications/%s?status=finished' -X PUT\n"
-       % (job_id, docker_image, job_id)
+       "curl -i -H 'Content-Type: application/json'  'http://%s/v1/notifications/%s?status=finished' -X PUT\n"
+       % (my_own_name, job_id, docker_image, my_own_name, job_id)
     )
 
 
