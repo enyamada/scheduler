@@ -82,13 +82,10 @@ def save_job_schedule (docker_image, stime, callback, env_vars):
     # Try to insert the new schedule into the database. If it fails, return -1, otherwise, return the scheduled job id.
     try:
        if callback == "":
-          #sql = "INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ('%s', '%s', 'scheduled', '%s' )" % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars)
           sql = "INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ('%s', '%s', 'scheduled', '%s' )" % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, MySQLdb.escape_string(env_vars))
        else:
           sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES ("%s", "%s", "scheduled", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars, callback)
 
-       print "SQL=%s"  % sql
-       print "SQL2=%s" % MySQLdb.escape_string(sql)
        cursor.execute ( sql )
 
     except Exception as e:
@@ -151,7 +148,8 @@ def schedule_job():
 
     # Schedule the spot instance
     [ req_id, req_state, req_status_code ] = create_spot_instance (job_id, stime, json["docker_image"], env_vars)
-    update_db_req_data (job_id, req_id, req_state, req_status_code)
+    update_db (job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code)
+    #update_db_req_data (job_id, req_id, req_state, req_status_code)
 
     # Schedule the job to run at the specified date/time
     #scheduler.add_job(run_job, 'date', run_date=json["datetime"], args=[job_id])
@@ -235,6 +233,7 @@ def process_notification (job_id):
        if status == "finished":
            print ("*** Executing user callback function: %s ****" % callback(job_id))
            print "*** Terminating spot instance ***"
+           call_callback(job_id)
            terminate_instance(job_id)
 
        return make_response(jsonify({'Success': 'Notification has been processed, status updated to %s' % status}), 200)
@@ -334,7 +333,7 @@ def create_spot_instance(job_id, sched_time, docker_image, env_vars):
 
 
     response = client.request_spot_instances (
-       SpotPrice     = '0.012',
+       SpotPrice     = '0.0102',
        InstanceCount = 1,
        Type          = 'one-time',
        ValidFrom     = sched_time,
@@ -417,12 +416,15 @@ def check_jobs():
 
 
         if aws_req_state == 'open':
-	    update_db_state (job_id, aws_req_state, aws_req_status_code, None)
+            update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code)
+	    #update_db_state (job_id, aws_req_state, aws_req_status_code, None)
 	elif aws_req_state == 'active':
-	    update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
+            update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
+	    #update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
         elif aws_req_state == 'cancelled' or aws_req_state == 'failed':
 	    notify_user (job_id, aws_req_state)
-	    update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
+            update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
+	    #update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
 	elif aws_req_state == 'closed':
 	    rerun (job_id)
         else:
@@ -502,6 +504,40 @@ def terminate_instance (job_id):
 
     cursor.execute ("UPDATE jobs SET status='done' WHERE id=%s" % job_id)
  
+
+def update_db (job_id, **kwargs):
+
+    cursor = Db.cursor()
+
+    set_clause = ""
+    for k in kwargs:
+        set_clause = set_clause + "%s='%s'," % (k, kwargs[k])
+
+    set_clause = set_clause[:-1]
+
+    sql = "UPDATE jobs SET %s WHERE id=%s" % (set_clause, job_id)
+    print "Update db: %s" % sql
+    cursor.execute (sql)
+ 
+    
+
+def call_callback (job_id):
+
+  
+    url = callback(job_id)
+   
+    try:
+        f = urllib2.urlopen(url)
+        f.close()
+    
+    except HTTPError, e:
+        print("Ocorreu um erro ao requisitar o conteudo do servidor!\n")
+
+    
+    except URLError, e:
+        print("URL invalido!\n")
+        print("Mensagem: ", e.reason) 
+
 
 
 def build_env_vars_docker_format (env_vars):
