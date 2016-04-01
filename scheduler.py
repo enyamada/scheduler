@@ -3,11 +3,13 @@ from time import strptime, strftime
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
-import boto3
+import base64
 import logging
-import MySQLdb
 import os
 import time
+
+import boto3
+import MySQLdb
 
 
 
@@ -20,6 +22,7 @@ import time
 
 # REVIEW
 #   hostname for callback
+#   security: hashes, login
 
 app = Flask(__name__)
 
@@ -134,18 +137,15 @@ def schedule_job():
        if type(json["env_vars"]) is dict:
           env_vars =  json["env_vars"]
 
-    # Schedule the spot instance
-    [ req_id, req_state, req_status_code ] = create_spot_instance (stime, json["docker_image"], env_vars)
-
-
     job_id = save_job_schedule (json["docker_image"], stime, callback, env_vars, req_id, req_state, req_status_code)
-
     if job_id == -1:
         return make_response(jsonify({'error': 'Something went wrong when attempting to save data into database'}), 500)
 
+    # Schedule the spot instance
+    [ req_id, req_state, req_status_code ] = create_spot_instance (job_id, stime, json["docker_image"], env_vars)
 
     # Schedule the job to run at the specified date/time
-    scheduler.add_job(run_job, 'date', run_date=json["datetime"], args=[job_id])
+    #scheduler.add_job(run_job, 'date', run_date=json["datetime"], args=[job_id])
 
     # Returns a json with the accepted json data and the job-id appended
     json["job_id"] = job_id
@@ -211,6 +211,7 @@ def update_job (job_id):
 
 
 
+
 @app.route ('/v1/notifications/<job_id>', methods=['PUT'])
 def process_notification (job_id):
 
@@ -225,6 +226,7 @@ def process_notification (job_id):
        if status == "finished":
            print ("*** Executing user callback function: %s ****" % callback(job_id))
            print "*** Terminating spot instance ***"
+           terminate_instance(job_id)
 
        return make_response(jsonify({'Success': 'Notification has been processed, status updated to %s' % status}), 200)
 
@@ -299,12 +301,27 @@ def callback (job_id):
 
 
 
-def create_spot_instance(sched_time):
+def create_spot_instance(job_id, sched_time, docker_image, env_vars):
 
     client  = boto3.client('ec2')
 
+    user_data = ( 
+       b"#!/bin/bash\n"
+       "touch /tmp/start.txt\n"
+       "curl -i -H 'Content-Type: application/json'  'http://ec2-54-233-149-166.sa-east-1.compute.amazonaws.com/v1/notifications/%s?status=started' -X PUT\n"
+       "yum -y update\n"
+       "yum install docker -y\n"
+       "sudo service docker start\n"
+       "sudo docker run %s\n"
+       "touch /tmp/executing.txt\n"
+       "sleep 180\n"
+       "curl -i -H 'Content-Type: application/json'  'http://ec2-54-233-149-166.sa-east-1.compute.amazonaws.com/v1/notifications/%s?status=finished' -X PUT\n"
+       % (job_id, docker_image, job_id)
+    )
+
+
     response = client.request_spot_instances (
-       SpotPrice     = '0.0102',
+       SpotPrice     = '0.012',
        InstanceCount = 1,
        Type          = 'one-time',
        ValidFrom     = sched_time,
@@ -313,27 +330,16 @@ def create_spot_instance(sched_time):
          'InstanceType'   : 'm3.medium',
          'KeyName'        : 'enyamada-key-pair',
          'SecurityGroups' : ['default', sg_name],
-         'UserData'       : """
-#!/bin/bash
-touch /tmp/start.txt
-curl -i -H "Content-Type: application/json"  'http://ec2-54-233-149-166.sa-east-1.compute.amazonaws.com/v1/notifications/42?status=started' -X PUT
-yum -y update
-yum install docker -y
-sudo service docker start
-sudo docker run hello-world
-touch /tmp/executing.txt
-sleep 120
-curl -i -H "Content-Type: application/json"  'http://ec2-54-233-149-166.sa-east-1.compute.amazonaws.com/v1/notifications/42?status=finished' -X PUT
-"""
+         'UserData'       : base64.b64encode (user_data)
        }
-    }
+    )
 
 
-    request_id = response['SpotInstanceRequests'][0]['SpotInstanceRequestId']
-    state =  response['SpotInstanceRequests'][0]['State']  # open/failed/active/cancelled/closed
-    status_code = response['SpotInstanceRequests'][0]['Status']['Code'] # pending-evaluation/price-too-low/etc
+    req_id = response['SpotInstanceRequests'][0]['SpotInstanceRequestId']
+    req_state =  response['SpotInstanceRequests'][0]['State']  # open/failed/active/cancelled/closed
+    req_status_code = response['SpotInstanceRequests'][0]['Status']['Code'] # pending-evaluation/price-too-low/etc
 
-    return [ request_id, state, status_code]
+    return [ req_id, req_state, req_status_code]
 
 
 
@@ -365,7 +371,6 @@ curl -i -H "Content-Type: application/json"  'http://ec2-54-233-149-166.sa-east-
 #      bad-parameters
 
 def check_jobs():
-""" 
     # states: open|active|closed|cancelled|failed)
   
     # 1- for each job (not marked as done in DB) that should be already running  (run_at<NOW()) and db's state is open:
@@ -376,37 +381,39 @@ def check_jobs():
     #       - closed: re-run immediately if it was terminated by AWS so that it runs ASAP
 
 
-    When our callback is called:
-	- ensure DB is consistent (state=active, instance_id is known)
-        - call the user's callback
-	- terminate the instance
-	- DB status=> done  
+    # When our callback is called:
+    #   - ensure DB is consistent (state=active, instance_id is known)
+    #   - call the user's callback
+    #   - terminate the instance
+    #   - DB status=> done  
       
     # 2- identify if any instance was already running has finished
     # Get the list of scheduled jobs that are not done yet and have schedule time > now
 
 
-"""
 
     cursor = Db.cursor(MySQLdb.cursors.DictCursor)
-    cursor.execute ("SELECT * FROM jobs WHERE run_at <= NOW() AND status <> 'done' AND state='open'")
+    cursor.execute ("SELECT * FROM jobs WHERE run_at <= NOW() AND status <> 'done' AND (req_state='active' OR req_state='open')")
 
     rows = cursor.fetchall()
     for row in rows:
+        print "** PROCESSING row "
+        print row
         job_id = row['id']
+        [ aws_req_state, aws_req_status_code, aws_instance_id ] = get_aws_req_status (row['req_id'])
 
-	[ state, status_code, instance_id ] = get_req_status (row['req_id'])
-        if state == 'open':
-	   update_db_state (job_id, state, status_code, None)
-	elif state == 'active':
-	   update_db_state (job_id, state, status_code, instance_id)
-        elif state == 'cancelled' or state == 'failed':
-	   notify_user (job_id, state)
-	   update_db_state (job_id, state, status_code, instance_id)
-	elif state == 'closed':
-	   rerun (job_id)
+
+        if aws_req_state == 'open':
+	    update_db_state (job_id, aws_req_state, aws_req_status_code, None)
+	elif aws_req_state == 'active':
+	    update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
+        elif aws_req_state == 'cancelled' or aws_req_state == 'failed':
+	    notify_user (job_id, aws_req_state)
+	    update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
+	elif aws_req_state == 'closed':
+	    rerun (job_id)
         else:
-	   print "Unexpected state: %s" % state
+	    print "Unexpected state: %s" % aws_req_state
 
 
 def update_db_status_code (job_id, status_code):
@@ -416,30 +423,40 @@ def update_db_status_code (job_id, status_code):
 
 
 
-def update_db_state (job_id, state, status_code, instance_id):
+def update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id):
    
     cursor = Db.cursor()
-    if instance_id is None:
-       cursor.execute ("UPDATE jobs SET state='%s', status_code='%s' where id=%s" % (state, status_code, job_id))
+
+    print "*** UPDATE id=%d, state=%s, status_code=%s, instance_id=%s" % (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
+
+    # Update the db with the latest aws request state and status_code
+    if aws_instance_id is None:
+        cursor.execute ("UPDATE jobs SET req_state='%s', req_status_code='%s' where id=%s" % (aws_req_state, aws_req_status_code, job_id))
     else:
-       cursor.execute ("UPDATE jobs SET state='%s', status_code='%s', instance_id='%s' WHERE id=%s" % (state, status_code, instance_id, job_id))
+        cursor.execute ("UPDATE jobs SET req_state='%s', req_status_code='%s', instance_id='%s' WHERE id=%s" % (aws_req_state, aws_req_status_code, aws_instance_id, job_id))
+
+    # In addition, if the state is cancelled or failed, mark this job as done, so that we'll know there's nothing else to do here.
+    if aws_req_state == 'cancelled' or aws_req_state == 'failed':
+        cursor.execute ("UPDATE jobs SET status='done' WHERE id=%s" % (job_id))
+
  
 
-def notify_user (job_id, state):
+def notify_user (job_id, req_state):
 
     cursor = Db.cursor(MySQLdb.cursors.DictCursor)
    
     cursor.execute ("SELECT * from jobs where id=%s" % job_id)
+    row = cursor.fetchone()
 
-    print ("Executing %s with parameter %state!" % row['callback'] 
+    print ("Executing %s with parameter %s!" % (row['callback'],req_state) )
  
 	
 
-def rerun (job_id):
-	pass
+def rerun (job_id): 
+    return 0
 
 
-def get_req_status (req_id)
+def get_aws_req_status (req_id):
     
     client  = boto3.client('ec2')
 
@@ -447,17 +464,32 @@ def get_req_status (req_id)
           SpotInstanceRequestIds=[req_id]
     )
 
-    state = response['SpotInstanceRequests'][0]['State'] 
-    status_code = response['SpotInstanceRequests'][0]['Status']['Code'] 
+    req_state = response['SpotInstanceRequests'][0]['State'] 
+    req_status_code = response['SpotInstanceRequests'][0]['Status']['Code'] 
     if response['SpotInstanceRequests'][0].has_key ('InstanceId'): 
         instance_id = response['SpotInstanceRequests'][0]['InstanceId']
     else:
         instance_id = None
 
-    return [ state, status_code, instance_id ] 
+    return [ req_state, req_status_code, instance_id ] 
 
 
      
+def terminate_instance (job_id):
+
+    cursor = Db.cursor(MySQLdb.cursors.DictCursor)
+
+    cursor.execute ("SELECT * from jobs where id=%s" % job_id)
+    row = cursor.fetchone()
+
+    client = boto3.client('ec2')
+
+    print "Teminating %s" % row['instance_id']
+    response = client.terminate_instances (InstanceIds=[row['instance_id']])
+
+    cursor.execute ("UPDATE jobs SET status='done' WHERE id=%s" % job_id)
+ 
+
 
 
 if __name__ == '__main__':
@@ -470,7 +502,6 @@ if __name__ == '__main__':
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(check_jobs, 'interval', seconds=60)
-
     scheduler.start()
 
     app.run(debug=True, host='0.0.0.0', port=80)
