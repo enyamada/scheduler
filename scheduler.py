@@ -254,7 +254,8 @@ def not_found(error):
 
 def open_db_connection(config):
 
-   conn = MySQLdb.connect (config["host"], config["user"], config["secret"], config["db"])
+   host = os.environ.get("MYSQL_PORT_3306_TCP_ADDR", config["host"])
+   conn = MySQLdb.connect (host, config["user"], config["secret"], config["db"])
    conn.autocommit(True)
    return conn
 
