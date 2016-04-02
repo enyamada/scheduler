@@ -5,8 +5,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 import base64
 import logging
+import logging.handlers
 import os
 import time
+import yaml
 
 import urllib2
 from urllib2 import HTTPError, URLError
@@ -148,7 +150,7 @@ def schedule_job():
         return make_response(jsonify({'error': 'Something went wrong when attempting to save data into database'}), 500)
 
     # Schedule the spot instance
-    [ req_id, req_state, req_status_code ] = create_spot_instance (job_id, stime, json["docker_image"], env_vars)
+    [ req_id, req_state, req_status_code ] = create_spot_instance (config["aws"], job_id, stime, json["docker_image"], env_vars)
     update_db (job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code)
     #update_db_req_data (job_id, req_id, req_state, req_status_code)
 
@@ -251,9 +253,9 @@ def process_notification (job_id):
 def not_found(error):
     return make_response(jsonify({'error': 'Not found'}), 404)
 
-def open_db_connection():
-   # TODO: save credentials in a safe place
-   conn  =  MySQLdb.connect ("localhost", "scheduler", "Pass&&wOrd", "scheduler")
+def open_db_connection(config):
+
+   conn = MySQLdb.connect (config["host"], config["user"], config["secret"], config["db"])
    conn.autocommit(True)
    return conn
 
@@ -311,7 +313,7 @@ def callback (job_id):
 
 
 
-def create_spot_instance(job_id, sched_time, docker_image, env_vars):
+def create_spot_instance(config, job_id, sched_time, docker_image, env_vars):
 
     client  = boto3.client('ec2')
 
@@ -335,22 +337,22 @@ def create_spot_instance(job_id, sched_time, docker_image, env_vars):
 
 
     response = client.request_spot_instances (
-       SpotPrice     = '0.012',
+       SpotPrice     = config["spot-price"], 
        InstanceCount = 1,
        Type          = 'one-time',
        ValidFrom     = sched_time,
        LaunchSpecification = {
-         'ImageId'        : 'ami-1e159872',
-         'InstanceType'   : 'm3.medium',
-         'KeyName'        : 'enyamada-key-pair',
+         'ImageId'        : config["ami-id"], 
+         'InstanceType'   : config["instance-type"], 
+         'KeyName'        : config["key-name"],
          'SecurityGroups' : ['default', sg_name],
          'UserData'       : base64.b64encode (user_data)
        }
     )
 
 
-    req_id = response['SpotInstanceRequests'][0]['SpotInstanceRequestId']
-    req_state =  response['SpotInstanceRequests'][0]['State']  # open/failed/active/cancelled/closed
+    req_id          = response['SpotInstanceRequests'][0]['SpotInstanceRequestId']
+    req_state       = response['SpotInstanceRequests'][0]['State']  # open/failed/active/cancelled/closed
     req_status_code = response['SpotInstanceRequests'][0]['Status']['Code'] # pending-evaluation/price-too-low/etc
 
     return [ req_id, req_state, req_status_code]
@@ -481,8 +483,9 @@ def get_aws_req_status (req_id):
           SpotInstanceRequestIds=[req_id]
     )
 
-    req_state = response['SpotInstanceRequests'][0]['State'] 
+    req_state       = response['SpotInstanceRequests'][0]['State'] 
     req_status_code = response['SpotInstanceRequests'][0]['Status']['Code'] 
+
     if response['SpotInstanceRequests'][0].has_key ('InstanceId'): 
         instance_id = response['SpotInstanceRequests'][0]['InstanceId']
     else:
@@ -560,16 +563,37 @@ def build_env_vars_docker_format (env_vars):
     return env_vars_parameter
 
 
+
+def setup_logging (config):
+
+
+    logger = logging.getLogger("")
+    logger.setLevel(logging.DEBUG)
+    handler = logging.handlers.RotatingFileHandler(
+                 config["file"], maxBytes=config["max-bytes"], backupCount=config["backup-count"]
+    )
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+
 if __name__ == '__main__':
-    logging.basicConfig()
-    Db = open_db_connection()
 
+    CONFIG_FILE = 'scheduler.yaml'
 
-    sg_name = "spot-temp-sg-xx"
-    spot_sg_id = create_spot_security_group(sg_name)
+    with open (CONFIG_FILE, "r") as f:
+        config = yaml.load (f)
+
+    print config
+
+    setup_logging (config["log"])
+    Db = open_db_connection(config["db"])
+
+    
+    spot_sg_id = create_spot_security_group(config["aws"]["sg-name"])
 
     scheduler = BackgroundScheduler()
-    scheduler.add_job(check_jobs, 'interval', seconds=60)
+    scheduler.add_job(check_jobs, 'interval', seconds=config["app"]["polling-interval"])
     scheduler.start()
 
     app.run(debug=True, host='0.0.0.0', port=80)
