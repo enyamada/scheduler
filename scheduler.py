@@ -81,7 +81,6 @@ def save_job_schedule (docker_image, stime, callback, env_vars):
 
     cursor = Db.cursor()
 
-    print "** env_cars = %s " % env_vars
     # Try to insert the new schedule into the database. If it fails, return -1, otherwise, return the scheduled job id.
     try:
        if callback == "":
@@ -89,10 +88,11 @@ def save_job_schedule (docker_image, stime, callback, env_vars):
        else:
           sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES ("%s", "%s", "scheduled", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars, callback)
 
+       logging.debug ("Saving job: %s" % sql)
        cursor.execute ( sql )
 
     except Exception as e:
-        print str(e)
+        loggin.critical ("Error when saving job into DB: %s" % str(e))
         return -1
 
 
@@ -154,8 +154,6 @@ def schedule_job():
     update_db (job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code)
     #update_db_req_data (job_id, req_id, req_state, req_status_code)
 
-    # Schedule the job to run at the specified date/time
-    #scheduler.add_job(run_job, 'date', run_date=json["datetime"], args=[job_id])
 
     # Returns a json with the accepted json data and the job-id appended
     json["job_id"] = job_id
@@ -234,10 +232,11 @@ def process_notification (job_id):
        update_db (job_id, status=status)
 
        if status == "finished":
-           print ("*** Executing user callback function: %s ****" % callback(job_id))
+           logging.info ("Executing job %s user callback function: %s" % (job_id, callback(job_id)) )
            call_callback(job_id)
-           print "*** Terminating spot instance ***"
+           logging.info ( "Terminating job %s spot instance" % job_id) 
            terminate_instance(job_id)
+           logging.info ( "Marking job %s as done" % job_id) 
            update_db (job_id, status='done')
 
        return make_response(jsonify({'Success': 'Notification has been processed, status updated to %s' % status}), 200)
@@ -259,22 +258,6 @@ def open_db_connection(config):
    conn.autocommit(True)
    return conn
 
-
-def run_job (job_id):
-    print "%s: executing job %d" % (datetime.now(), job_id)
-    cursor = Db.cursor()
-
-    # Get the job's data from the DB
-    sql = 'SELECT docker_image, env_vars FROM jobs WHERE id=%s' % job_id
-    cursor.execute (sql)
-    row = cursor.fetchone()
-    print "Start instance running %s with vars %s" % (row[0], row[1])
-
-
-    # Spin up the EC2 instance
-
-    # Update job status
-    cursor.execute ("UPDATE jobs SET status='requested' WHERE id=%s" % job_id);
 
 
 
@@ -413,8 +396,9 @@ def check_jobs():
 
     rows = cursor.fetchall()
     for row in rows:
-        print "** PROCESSING row "
-        print row
+        logging.info  ("Polling job %s status with AWS" % row['id']) 
+        logging.debug ("DB row: %s" % row)
+
         job_id = row['id']
         [ aws_req_state, aws_req_status_code, aws_instance_id ] = get_aws_req_status (row['req_id'])
 
@@ -426,13 +410,12 @@ def check_jobs():
             update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
 	    #update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
         elif aws_req_state == 'cancelled' or aws_req_state == 'failed':
-	    notify_user (job_id, aws_req_state)
             update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
 	    #update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
 	elif aws_req_state == 'closed':
 	    rerun (job_id)
         else:
-	    print "Unexpected state: %s" % aws_req_state
+	    logging.info ("Unexpected state returned from AWS at check_jobs(): %s" % aws_req_state)
 
 
 def update_db_status_code (job_id, status_code):
@@ -446,7 +429,7 @@ def update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id
    
     cursor = Db.cursor()
 
-    print "*** UPDATE id=%d, state=%s, status_code=%s, instance_id=%s" % (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
+    loggin.debug ("UPDATE id=%d, state=%s, status_code=%s, instance_id=%s" % (job_id, aws_req_state, aws_req_status_code, aws_instance_id) )
 
     # Update the db with the latest aws request state and status_code
     if aws_instance_id is None:
@@ -467,7 +450,7 @@ def notify_user (job_id, req_state):
     cursor.execute ("SELECT * from jobs where id=%s" % job_id)
     row = cursor.fetchone()
 
-    print ("Executing %s with parameter %s!" % (row['callback'],req_state) )
+    loggin.debug ("Executing %s with parameter %s!" % (row['callback'],req_state) )
  
 	
 
@@ -504,10 +487,9 @@ def terminate_instance (job_id):
 
     client = boto3.client('ec2')
 
-    print "Teminating %s" % row['instance_id']
+    logging.info ("Teminating job %s instance %s" % (job_id, row['instance_id']) ) 
     response = client.terminate_instances (InstanceIds=[row['instance_id']])
 
-    cursor.execute ("UPDATE jobs SET status='done' WHERE id=%s" % job_id)
  
 
 
@@ -522,7 +504,7 @@ def update_db (job_id, **kwargs):
     set_clause = set_clause[:-1]
 
     sql = "UPDATE jobs SET %s WHERE id=%s" % (set_clause, job_id)
-    print "Update db: %s" % sql
+    logging.debug ("Update db: %s" % sql)
     cursor.execute (sql)
  
     
@@ -541,10 +523,11 @@ def call_callback (job_id):
 
     
     except URLError as e:
-        print "Wrong url"
+        logging.info ("Error when calling back job %s callback function (%s)" % (job_id, url) )
         update_db (job_id, notes="Tried to callback %s but seems like an invalid url: %s" % (url, e.reason))
 
     else: 
+        logging.info ("Job %s callback function (%s) called successfully" % (job_id, url) )
 	update_db (job_id, notes="Called back %s sucessfully at %s" % (url, datetime.now()))
 
 
@@ -568,7 +551,19 @@ def setup_logging (config):
 
 
     logger = logging.getLogger("")
-    logger.setLevel(logging.DEBUG)
+
+    if config["level"] == "debug":
+        level = logging.DEBUG
+    elif config["level"] == "info":
+        level = logging.INFO
+    elif config["level"] == "warning":
+        level = logging.WARNING
+    elif config["level"] == "error":
+        level = logging.ERROR
+    elif config["level"] == "critical":
+        level = logging.CRITICAL
+
+    logger.setLevel(level)
     handler = logging.handlers.RotatingFileHandler(
                  config["file"], maxBytes=config["max-bytes"], backupCount=config["backup-count"]
     )
@@ -584,7 +579,7 @@ if __name__ == '__main__':
     with open (CONFIG_FILE, "r") as f:
         config = yaml.load (f)
 
-    print config
+    logging.debug ("Config read: %s" % config)
 
     setup_logging (config["log"])
     Db = open_db_connection(config["db"])
