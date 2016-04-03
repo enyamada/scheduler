@@ -254,11 +254,9 @@ def not_found(error):
 
 def open_db_connection(config):
 
-   host = os.environ.get("MYSQL_PORT_3306_TCP_ADDR", config["host"])
-   conn = MySQLdb.connect (host, config["user"], config["secret"], config["db"])
+   conn = MySQLdb.connect (config["host"], config["user"], config["secret"], config["db"])
    conn.autocommit(True)
    return conn
-
 
 
 
@@ -321,7 +319,7 @@ def create_spot_instance(config, job_id, sched_time, docker_image, env_vars):
 
 
     response = client.request_spot_instances (
-       SpotPrice     = config["spot-price"], 
+       SpotPrice     = "%s" % config["spot-price"], 
        InstanceCount = 1,
        Type          = 'one-time',
        ValidFrom     = sched_time,
@@ -329,7 +327,7 @@ def create_spot_instance(config, job_id, sched_time, docker_image, env_vars):
          'ImageId'        : config["ami-id"], 
          'InstanceType'   : config["instance-type"], 
          'KeyName'        : config["key-name"],
-         'SecurityGroups' : ['default', sg_name],
+         'SecurityGroups' : ['default', config["sg-name"]],
          'UserData'       : base64.b64encode (user_data)
        }
     )
@@ -563,6 +561,8 @@ def setup_logging (config):
         level = logging.ERROR
     elif config["level"] == "critical":
         level = logging.CRITICAL
+    else:
+        level = logging.WARNING
 
     logger.setLevel(level)
     handler = logging.handlers.RotatingFileHandler(
@@ -573,13 +573,51 @@ def setup_logging (config):
     logger.addHandler(handler)
 
 
-if __name__ == '__main__':
+def read_aws_env_config(config):
+
+    config["ami-id"]        = os.environ.get("AWS_AMI_ID", config["ami-id"])
+    config["spot-price"]    = os.environ.get("AWS_SPOT_PRICE", config["spot-price"])
+    config["instance-type"] = os.environ.get("AWS_INSTANCE_TYPE", config["instance-type"])
+    config["key-name"]      = os.environ.get("AWS_KEY_NAME", config["key-name"])
+    config["sg-name"]       = os.environ.get("AWS_SG_NAME", config["sg-name"])
+
+    
+def read_app_env_config(config):
+
+    config["polling-interval"] = os.environ.get("APP_POLLING_INTERVAL", config["polling-interval"])
+
+
+
+def read_db_env_config (config):
+
+   config["host"] = os.environ.get("MYSQL_PORT_3306_TCP_ADDR", config["host"])
+
+
+def read_log_env_config (config):
+
+   config["level"] = os.environ.get("LOG_LEVEL", config["level"])
+
+
+def read_config():
 
     CONFIG_FILE = 'scheduler.yaml'
 
     with open (CONFIG_FILE, "r") as f:
         config = yaml.load (f)
 
+    read_aws_env_config(config["aws"])
+    read_app_env_config(config["app"])
+    read_db_env_config(config["db"])
+    read_log_env_config(config["log"])
+
+    return config
+
+
+
+if __name__ == '__main__':
+
+
+    config = read_config()
     logging.debug ("Config read: %s" % config)
 
     setup_logging (config["log"])
@@ -592,5 +630,10 @@ if __name__ == '__main__':
     scheduler.add_job(check_jobs, 'interval', seconds=config["app"]["polling-interval"])
     scheduler.start()
 
-    app.run(debug=True, host='0.0.0.0', port=80)
+    app.run(host='0.0.0.0', port=80)
+
+
+
+
+
 
