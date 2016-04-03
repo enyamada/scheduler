@@ -2,13 +2,13 @@ from flask import Flask, jsonify, abort, make_response, request, url_for
 from time import strptime, strftime
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
+from config import read_config
 
 import base64
 import logging
 import logging.handlers
 import os
 import time
-import yaml
 
 import urllib2
 from urllib2 import HTTPError, URLError
@@ -442,16 +442,6 @@ def update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id
 
  
 
-def notify_user (job_id, req_state):
-
-    cursor = Db.cursor(MySQLdb.cursors.DictCursor)
-   
-    cursor.execute ("SELECT * from jobs where id=%s" % job_id)
-    row = cursor.fetchone()
-
-    loggin.debug ("Executing %s with parameter %s!" % (row['callback'],req_state) )
- 
-	
 
 def rerun (job_id): 
     return 0
@@ -573,44 +563,6 @@ def setup_logging (config):
     logger.addHandler(handler)
 
 
-def read_aws_env_config(config):
-
-    config["ami-id"]        = os.environ.get("AWS_AMI_ID", config["ami-id"])
-    config["spot-price"]    = os.environ.get("AWS_SPOT_PRICE", config["spot-price"])
-    config["instance-type"] = os.environ.get("AWS_INSTANCE_TYPE", config["instance-type"])
-    config["key-name"]      = os.environ.get("AWS_KEY_NAME", config["key-name"])
-    config["sg-name"]       = os.environ.get("AWS_SG_NAME", config["sg-name"])
-
-    
-def read_app_env_config(config):
-
-    config["polling-interval"] = os.environ.get("APP_POLLING_INTERVAL", config["polling-interval"])
-
-
-
-def read_db_env_config (config):
-
-   config["host"] = os.environ.get("MYSQL_PORT_3306_TCP_ADDR", config["host"])
-
-
-def read_log_env_config (config):
-
-   config["level"] = os.environ.get("LOG_LEVEL", config["level"])
-
-
-def read_config():
-
-    CONFIG_FILE = 'scheduler.yaml'
-
-    with open (CONFIG_FILE, "r") as f:
-        config = yaml.load (f)
-
-    read_aws_env_config(config["aws"])
-    read_app_env_config(config["app"])
-    read_db_env_config(config["db"])
-    read_log_env_config(config["log"])
-
-    return config
 
 
 
