@@ -67,14 +67,9 @@ app = Flask(__name__)
 
 @app.route('/')
 def hello_world():
-    return 'Hello World!'
+    return 'Hello World!\n'
 
 
-
-def update_db_req_data (job_id, req_id, req_state, req_status_code):
-
-    cursor = Db.cursor()
-    cursor.execute ("UPDATE jobs SET req_id='%s', req_state='%s', req_status_code='%s' WHERE id=%s" % (req_id, req_state, req_status_code,  job_id))
 
 
 def save_job_schedule (docker_image, stime, callback, env_vars):
@@ -92,7 +87,7 @@ def save_job_schedule (docker_image, stime, callback, env_vars):
        cursor.execute ( sql )
 
     except Exception as e:
-        loggin.critical ("Error when saving job into DB: %s" % str(e))
+        logging.critical ("Error when saving job into DB: %s" % str(e))
         return -1
 
 
@@ -131,10 +126,7 @@ def schedule_job():
         return jsonify ({"Error": "Date/time must be in the future"}), 400
 
     # Get callback if it was sent
-    if json.has_key("callback"):
-        callback = json["callback"]
-    else:
-        callback = ""
+    callback = json.get("callback", "")
 
     # Get the env_vars is it was sent
     env_vars = None
@@ -152,8 +144,6 @@ def schedule_job():
     # Schedule the spot instance
     [ req_id, req_state, req_status_code ] = create_spot_instance (config["aws"], job_id, stime, json["docker_image"], env_vars)
     update_db (job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code)
-    #update_db_req_data (job_id, req_id, req_state, req_status_code)
-
 
     # Returns a json with the accepted json data and the job-id appended
     json["job_id"] = job_id
@@ -404,43 +394,17 @@ def check_jobs():
 
         if aws_req_state == 'open':
             update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code)
-	    #update_db_state (job_id, aws_req_state, aws_req_status_code, None)
 	elif aws_req_state == 'active':
             update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
-	    #update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
         elif aws_req_state == 'cancelled' or aws_req_state == 'failed':
             update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
-	    #update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id)
 	elif aws_req_state == 'closed':
 	    rerun (job_id)
         else:
 	    logging.info ("Unexpected state returned from AWS at check_jobs(): %s" % aws_req_state)
 
 
-def update_db_status_code (job_id, status_code):
 
-    cursor = Db.cursor()
-    cursor.execute ("UPDATE jobs SET status_code='%s' where id=%s" % (status_code, job_id))
-
-
-
-def update_db_state (job_id, aws_req_state, aws_req_status_code, aws_instance_id):
-   
-    cursor = Db.cursor()
-
-    loggin.debug ("UPDATE id=%d, state=%s, status_code=%s, instance_id=%s" % (job_id, aws_req_state, aws_req_status_code, aws_instance_id) )
-
-    # Update the db with the latest aws request state and status_code
-    if aws_instance_id is None:
-        cursor.execute ("UPDATE jobs SET req_state='%s', req_status_code='%s' where id=%s" % (aws_req_state, aws_req_status_code, job_id))
-    else:
-        cursor.execute ("UPDATE jobs SET req_state='%s', req_status_code='%s', instance_id='%s' WHERE id=%s" % (aws_req_state, aws_req_status_code, aws_instance_id, job_id))
-
-    # In addition, if the state is cancelled or failed, mark this job as done, so that we'll know there's nothing else to do here.
-    if aws_req_state == 'cancelled' or aws_req_state == 'failed':
-        cursor.execute ("UPDATE jobs SET status='done' WHERE id=%s" % (job_id))
-
- 
 
 
 def rerun (job_id): 
@@ -458,10 +422,7 @@ def get_aws_req_status (req_id):
     req_state       = response['SpotInstanceRequests'][0]['State'] 
     req_status_code = response['SpotInstanceRequests'][0]['Status']['Code'] 
 
-    if response['SpotInstanceRequests'][0].has_key ('InstanceId'): 
-        instance_id = response['SpotInstanceRequests'][0]['InstanceId']
-    else:
-        instance_id = None
+    instance_id = response['SpotInstanceRequests'][0].get ('InstanceId', None)
 
     return [ req_state, req_status_code, instance_id ] 
 
