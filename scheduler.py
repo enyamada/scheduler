@@ -5,7 +5,7 @@
 
    The following operations are supported:
 
-   POST /v1/jobs: Creates a new job. The specification must be sent using 
+   POST /v1/jobs: Creates a new job. The specification must be sent using
        a JSON like this:
 
          {
@@ -63,7 +63,7 @@
            "env_vars": "-e 'env3=v3' -e 'env2=v2' -e 'env1=v1' ",
            "id": 6,
            "instance_id": "i-6e070eb4",
-           "notes": "Something went wrong when trying to callback http://usp2.br: ",
+           "notes": "Something went wrong when trying to callback xxx",
            "req_id": "sir-03dhg71p",
            "req_state": "active",
            "req_status_code": "fulfilled",
@@ -71,12 +71,12 @@
            "status": "done"
       }
 
-        req_id, req_state, req_status_code and instance_id are values 
-        provided by AWS and their meaning should be self explanatory. 
+        req_id, req_state, req_status_code and instance_id are values
+        provided by AWS and their meaning should be self explanatory.
         Those fields are kept as up to date as possible (this
         application polls AWS every 60 seconds (configurable) to
         check if any update has occurred).
-   
+
         The possible status values are:
              - scheduled: job has been scheduled with AWS but has not
                    been effetively started yet.
@@ -86,7 +86,7 @@
              - re-scheduled: the job had been started but its instance was
                    terminated for whatever reason. For those cases,
                    the job is automatically re-scheduled. This status
-                   reflects this scenario, and means the job was 
+                   reflects this scenario, and means the job was
                    scheduled again for a new run (but has not been started
                    yet)
                    means the
@@ -140,6 +140,20 @@ def hello_world():
 
 
 def save_job_schedule(db_conn, docker_image, stime, callback, env_vars):
+    """
+    Saves into the database the data about a new job.
+
+    Args:
+        db_conn: dabase connection (as returned by db.open_conneection()
+        docker_image: container image to be used by the job
+        stime: scheduled time (YYYY-MM-DD HH:MM:SS). It's assumed UTC tz.
+        callback: callback endpoint to be called once the job is done.
+        env_vars: environment variables to be passed to the container.
+            They must be in the docker format ("-e 'VAR1'='val1'")
+
+    Returns:
+        job id.
+    """
 
     cursor = db_conn.cursor()
 
@@ -147,14 +161,16 @@ def save_job_schedule(db_conn, docker_image, stime, callback, env_vars):
     # -1, otherwise, return the scheduled job id.
     try:
         if callback == "":
-            sql = "INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES('%s', '%s', '%s', '%s' )" %(
-               stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, 
-                              STATUS_SCHEDULED,
-                              MySQLdb.escape_string(env_vars))
+            sql = "INSERT INTO jobs(run_at, docker_image, status, " \
+                  "env_vars) VALUES('%s', '%s', '%s', '%s' )" %(
+                      stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image,
+                      STATUS_SCHEDULED, MySQLdb.escape_string(env_vars))
+
         else:
-            sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES("%s", "%s", "%s", "%s", "%s")' %(
-               stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, 
-                              STATUS_SCHEDULED, env_vars, callback)
+            sql = "INSERT INTO jobs(run_at, docker_image, status, " \
+                  "env_vars, callback) VALUES('%s', '%s', '%s', '%s', '%s')" %(
+                      stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image,
+                      STATUS_SCHEDULED, env_vars, callback)
 
         logging.debug("Saving job: %s", sql)
         cursor.execute(sql)
@@ -164,10 +180,10 @@ def save_job_schedule(db_conn, docker_image, stime, callback, env_vars):
         return -1
 
 
-    # get id
+    # return the newly job generated id
     cursor.execute("SELECT last_insert_id()")
-    id = cursor.fetchone()
-    return id[0]
+    job_id = cursor.fetchone()
+    return job_id[0]
 
 
 
@@ -179,9 +195,9 @@ def schedule_job():
     be created and scheduled).
 
     It reads the JSON sent, makes sure it's well formed, parse its
-    data and store it on a database. 
+    data and store it on a database.
 
-    A 400 code can be returned if the JSON is not well formed, the 
+    A 400 code can be returned if the JSON is not well formed, the
     specified schedule date/time is not in the future or if there's
     any mandatory field missing.
 
@@ -197,9 +213,9 @@ def schedule_job():
                }
          }
 
-    date_time must be specified in the UTC timezone. env-variables and 
+    date_time must be specified in the UTC timezone. env-variables and
     callback parameters are optional.
- 
+
     If everything is OK, a 201 is returned with a JSON confirming the
     job data and with its job-id.
 
@@ -209,8 +225,8 @@ def schedule_job():
     try:
         json = request.get_json()
     except:
-        return jsonify({"Error": "Bad request. Make sure that the JSON posted"
-                        "is well formed."}), 400
+        return jsonify({"Error": "Bad request. Make sure that the JSON " \
+                       "posted is well formed."}), 400
 
     # Return an error if there is any mandatory field missing
     if not(json.has_key("docker_image") and json.has_key("datetime")):
@@ -220,7 +236,8 @@ def schedule_job():
     try:
         stime = datetime.strptime(json["datetime"], "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return jsonify({"Error": "Date format must be yyyy-mm-dd hh:mm:ss"}), 400
+        return jsonify({"Error": "Date format must be yyyy-mm-dd hh:mm:ss"}), \
+               400
 
     # Ensure time is in the future
     if stime < datetime.now():
@@ -243,11 +260,15 @@ def schedule_job():
     job_id = save_job_schedule(db_conn, json["docker_image"], stime,
                                callback, env_vars)
     if job_id == -1:
-        return make_response(jsonify({'error': 'Something went wrong when attempting to save data into database'}), 500)
+        return make_response(
+            jsonify({'error': 'Something went wrong when attempting ' \
+                    'to save data into db'}), 500)
 
     # Schedule the spot instance with AWS and update the db
     # with the parameters gotten.
-    [req_id, req_state, req_status_code] = aws.create_spot_instance(config["aws"], job_id, stime, json["docker_image"], env_vars)
+    [req_id, req_state, req_status_code] = \
+        aws.create_spot_instance(config["aws"], job_id, stime,
+                                 json["docker_image"], env_vars)
     db.update_db(db_conn, job_id, req_id=req_id, req_state=req_state,
                  req_status_code=req_status_code)
 
@@ -265,7 +286,7 @@ def get_list():
 
     Currently all jobs scheduled over the last 24h are returned. An obvious
     extension to this call is to allow parametrization.
-    """" 
+    """
 
     # From the database, get all jobs scheduled in the last 24h
     # and store them on a dict
@@ -285,7 +306,7 @@ def get_status(job_id):
 
     See module docstring for an example request and response and
     fields meaning.
-    """"
+    """
 
     # Get data from the DB about the specific job
     cursor = db_conn.cursor(MySQLdb.cursors.DictCursor)
@@ -293,7 +314,8 @@ def get_status(job_id):
 
     # 404 if no such job was found
     if cursor.rowcount == 0:
-        return make_response(jsonify({'error': 'No job with such id was found'}), 404)
+        return make_response(jsonify({
+            'error': 'No job with such id was found'}), 404)
 
     # Otherise, return the job data
     return jsonify(job=cursor.fetchone())
@@ -306,36 +328,43 @@ def update_job(job_id):
     Handles the PUT /v1/jobs/<job-id> request (where a specific job
     must be updated). Currently, only callback is supported.
     job status).
- 
+
     A JSON must be sent along with the request specifying the new
     callback to be used.
-    """"
+    """
 
     # Make sure a well formed json was posted
     try:
         json = request.get_json()
     except:
-        return jsonify({"Error": "Bad request. Make sure that the JSON posted is well formed."}), 400
+        return jsonify({"Error": \
+           "Bad request. Make sure that the JSON posted is well formed."}), 400
 
-    # Job exists and it's still time to change? (it's not already 
+    # Job exists and it's still time to change? (it's not already
     # running or it's done?)
     cursor = db_conn.cursor()
-    cursor.execute("SELECT * FROM jobs WHERE id = %s AND status='%s'" %(job_id, STATUS_SCHEDULED))
+    cursor.execute("SELECT * FROM jobs WHERE id = %s AND status='%s'" \
+        %(job_id, STATUS_SCHEDULED))
     if cursor.rowcount == 0:
-        return make_response(jsonify({'error': 'No job with such id was found or the job is already running or done'}), 404)
+        return make_response(jsonify({'error': \
+            'No job with such id was found or the job is already ' \
+            'running or done'}), 404)
 
     # Make sure the JSON contains a callback field
     elif not json.has_key("callback"):
-        return make_response(jsonify({'error': 'No callback was specified.'}), 400)
+        return make_response(jsonify({'error': \
+            'No callback was specified.'}), 400)
 
     # Try to update the database with the new callback endpoint
     try:
         db.update_db(db_conn, job_id, callback=json["callback"])
-        return make_response(jsonify({'Success': 'Callback function updated to %s' % json["callback"]}), 200)
+        return make_response(jsonify({'Success': \
+            'Callback function updated to %s' % json["callback"]}), 200)
 
     except Exception as e:
         return make_response(
-            jsonify({'Error': 'Something went wrong when updating DB - %s' % str(e)}), 500)
+            jsonify({'Error': \
+                'Something went wrong when updating DB - %s' % str(e)}), 500)
 
 
 
@@ -346,7 +375,7 @@ def process_notification(job_id):
     Handles the PUT /v1/notifications/<job-id>?status=xxx request.
     This enpoint is used by the spot instances to notify about some
     important event (notably the container has started or finished).
-  
+
     The database is updated so that future GET /v1/jobs/<job-id> requests
     get the latest information.
 
@@ -355,13 +384,14 @@ def process_notification(job_id):
     addition, a note is stored in the "notes" column stating if
     the callback ran ok or not.
 
-    """"
+    """
 
 
     # Get the status sent
     status = request.args.get('status')
     if status == None:
-        return make_response(jsonify({'Error': 'Missing status= parameter'}), 400)
+        return make_response(jsonify({'Error': \
+            'Missing status= parameter'}), 400)
 
     # Try to update the DB with the status
     try:
@@ -370,27 +400,32 @@ def process_notification(job_id):
         # If status is "finished', then execute the user defined callback
         # for this job and terminate the spot instance.
         if status == "finished":
-            logging.info("Executing job %s user callback function: %s" % (job_id, callback_function(job_id)))
+            logging.info("Executing job %s user callback function: %s", \
+                         job_id, callback_function(job_id))
             call_callback(job_id)
 
             instance_id = db.job_db_data(db_conn, job_id, "instance_id")
-            logging.info("Terminating job %s spot instance %s" %(job_id, instance_id))
+            logging.info("Terminating job %s spot instance %s", \
+                         job_id, instance_id)
             aws.terminate_instance(instance_id)
 
             logging.info("Marking job %s as done", job_id)
             db.update_db(db_conn, job_id, status='%s' % STATUS_DONE)
 
-        return make_response(jsonify({'Success': 'Notification has been processed, status updated to %s' % status}), 200)
+        return make_response(jsonify({'Success': \
+            'Notification has been processed, status updated to %s' % \
+            status}), 200)
 
     except Exception as e:
-        return make_response(jsonify({'Error': 'Something went wrong when updating DB - %s' % str(e)}), 500)
+        return make_response(jsonify({'Error': \
+            'Something went wrong when updating DB - %s' % str(e)}), 500)
 
 
 
 
 
 @app.errorhandler(404)
-def not_found(error):
+def not_found():
     """
     404 handler
     """
@@ -446,13 +481,13 @@ def check_jobs():
     """
     This function is called by apscheduler every 60s (configurable).
 
-    For each job that is ready to run and still needs to be processed 
-    (status is not 'done'), this function polls AWS to get 
+    For each job that is ready to run and still needs to be processed
+    (status is not 'done'), this function polls AWS to get
     the latest information about the corresponding spot instance request
     (its state, status code and instance_id, if any) and updates the local
-    database. 
+    database.
 
-    If the request state is marked as closed (and not due to an application 
+    If the request state is marked as closed (and not due to an application
     ask), this means the spot instance was interrupted for some reason. In
     this case, a new spot instance is scheduled to be run one minute
     from now.
@@ -462,7 +497,9 @@ def check_jobs():
     # Get all jobs that are ready to be processed (scheduled
     # for a time in the past and has not been finished yet)
     cursor = db_conn.cursor(MySQLdb.cursors.DictCursor)
-    cursor.execute("SELECT * FROM jobs WHERE run_at <= NOW() AND status <> '%s' AND (req_state='active' OR req_state='open')" % STATUS_DONE)
+    cursor.execute("SELECT * FROM jobs WHERE run_at <= NOW() AND " \
+        "status <> '%s' AND (req_state='active' OR " \
+        "req_state='open')" % STATUS_DONE)
     rows = cursor.fetchall()
 
     # For each job
@@ -472,10 +509,10 @@ def check_jobs():
 
         # Asks AWS about the latest information about the job
         # spot instance request and save into the local database
-        # If the instance was running and has been terminated, run 
+        # If the instance was running and has been terminated, run
         # it again.
         job_id = row['id']
-        [aws_req_state, aws_req_status_code, aws_instance_id] = 
+        [aws_req_state, aws_req_status_code, aws_instance_id] = \
             aws.get_aws_req_status(row['req_id'])
 
         if aws_req_state == 'open':
@@ -509,10 +546,14 @@ def rerun(job_id):
 
     # Re-schedule the spot instance to run 1 minute from now
     stime = datetime.now()+timedelta(minutes=1)
-    [req_id, req_state, req_status_code] = aws.create_spot_instance(config["aws"], job_id, stime, docker_image, env_vars)
-  
+    [req_id, req_state, req_status_code] = \
+        aws.create_spot_instance(config["aws"], job_id, stime,
+                                 docker_image, env_vars)
+
     # Updates the database with the new status and scheduled time
-    db.update_db(db_conn, job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code, status="%s" % STATUS_RE_SCHEDULED, instance_id="", run_at=stime)
+    db.update_db(db_conn, job_id, req_id=req_id, req_state=req_state, \
+                 req_status_code=req_status_code, status="%s" % \
+                 STATUS_RE_SCHEDULED, instance_id="", run_at=stime)
 
 
 
@@ -527,23 +568,28 @@ def call_callback(job_id):
     """
 
     # Get the callback endpoint fot the job
-    url = callback(job_id)
+    url = callback_function(job_id)
 
     try:
         # Try to call it
         f = urllib2.urlopen(url)
         f.close()
 
-    except Exception as e:
-        db.update_db(db_conn, job_id, notes="Something went wrong when trying to callback %s: %s" %(url, e.message))
-
 
     except URLError as e:
-        logging.info("Error when calling back job %s callback function(%s)" %(job_id, url))
-        db.update_db(db_conn, job_id, notes="Tried to callback %s but seems like an invalid url: %s" %(url, e.reason))
+        logging.info("Error when calling back job %s callback function(%s)", \
+                     job_id, url)
+        db.update_db(db_conn, job_id, notes="Tried to callback %s but" \
+                     " seems like an invalid url: %s" %(url, e.reason))
+
+    except Exception as e:
+        db.update_db(db_conn, job_id, notes="Something went wrong when" \
+                     " trying to callback %s: %s" %(url, e.message))
+
 
     else:
-        logging.info("Job %s callback function(%s) called successfully" %(job_id, url))
+        logging.info("Job %s callback function(%s) called " \
+                     "successfully", job_id, url)
         db.update_db(db_conn, job_id,
                      notes="Called back %s sucessfully at %s" %
                      (url, datetime.now()))
@@ -573,12 +619,12 @@ def build_env_vars_docker_format(env_vars):
 
 
 def setup_logging(config):
-    """ 
+    """
     COnfigures the logging module with the specified configutation.
 
     Args:
         config: dict with the parameters. The only one supported for now
-           is level. 
+           is level.
     """
 
     logger = logging.getLogger("")
@@ -598,9 +644,10 @@ def setup_logging(config):
 
     logger.setLevel(level)
     handler = logging.handlers.RotatingFileHandler(
-                 config["file"], maxBytes=config["max-bytes"], 
-                 backupCount=config["backup-count"])
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        config["file"], maxBytes=config["max-bytes"],
+        backupCount=config["backup-count"])
+    formatter = logging.Formatter("%(asctime)s - %(name)s - " \
+        "%(levelname)s - %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
@@ -623,6 +670,7 @@ if __name__ == '__main__':
 
     spot_sg_id = aws.create_spot_security_group(config["aws"]["sg-name"])
 
+    # pylint: disable=no-value-for-parameter
     scheduler = BackgroundScheduler()
     scheduler.add_job(check_jobs, 'interval',
                       seconds=config["app"]["polling-interval"])
