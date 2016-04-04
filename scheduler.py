@@ -167,10 +167,15 @@ def save_job_schedule(db_conn, docker_image, stime, callback, env_vars):
                       STATUS_SCHEDULED, MySQLdb.escape_string(env_vars))
 
         else:
-            sql = "INSERT INTO jobs(run_at, docker_image, status, " \
-                  "env_vars, callback) VALUES('%s', '%s', '%s', '%s', '%s')" %(
-                      stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image,
-                      STATUS_SCHEDULED, env_vars, callback)
+            sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars,' \
+                  ' callback) VALUES ("%s", "%s", "scheduled", "%s", "%s")' % \
+                  (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, 
+                   env_vars, callback)
+
+            #sql = "INSERT INTO jobs(run_at, docker_image, status, " \
+            #      "env_vars, callback) VALUES('%s', '%s', '%s', '%s', '%s')" %(
+            #          stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image,
+            #          STATUS_SCHEDULED, env_vars, callback)
 
         logging.debug("Saving job: %s", sql)
         cursor.execute(sql)
