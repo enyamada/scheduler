@@ -1,4 +1,7 @@
 import boto3
+import urllib2
+from urllib2 import HTTPError, URLError
+import base64
 
 
 def create_spot_instance(config, job_id, sched_time, docker_image, env_vars):
@@ -96,17 +99,10 @@ def create_spot_security_group (sg_name):
 
 
 
-def terminate_instance (job_id):
+def terminate_instance (instance_id):
 
-    cursor = Db.cursor(MySQLdb.cursors.DictCursor)
 
-    cursor.execute ("SELECT * from jobs where id=%s" % job_id)
-    row = cursor.fetchone()
-
-    client = boto3.client('ec2')
-
-    logging.info ("Teminating job %s instance %s" % (job_id, row['instance_id']) )
-    response = client.terminate_instances (InstanceIds=[row['instance_id']])
+    response = client.terminate_instances (InstanceIds=instance_id)
 
 
 
