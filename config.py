@@ -21,18 +21,33 @@ def read_app_env_config(config):
 
 def read_db_env_config (config):
 
-   config["host"] = os.environ.get("MYSQL_PORT_3306_TCP_ADDR", config["host"])
+    config["host"] = os.environ.get("MYSQL_PORT_3306_TCP_ADDR", config["host"])
 
 
 def read_log_env_config (config):
 
-   config["level"] = os.environ.get("LOG_LEVEL", config["level"])
+    config["level"] = os.environ.get("LOG_LEVEL", config["level"])
 
 
 def read_config(config_file):
 
-    with open (config_file, "r") as f:
-        config = yaml.load (f)
+    """
+
+    Reads the parameters described in the passed config file (that must be
+    a YAML file). Then checks if any of them were overriden by a environment 
+    variable and  finally returns a dictionary containing the
+    setting in effect.  
+
+    Args:
+        config_file: YAML file to be used as a configuration file.
+
+    Returns:
+        A dictionary as retuned by the yaml module.
+    """
+
+
+    with open(config_file, "r") as f:
+        config = yaml.load(f)
 
     read_aws_env_config(config["aws"])
     read_app_env_config(config["app"])
