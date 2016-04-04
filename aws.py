@@ -102,6 +102,7 @@ def create_spot_security_group (sg_name):
 def terminate_instance (instance_id):
 
 
+    client  = boto3.client('ec2')
     response = client.terminate_instances (InstanceIds=instance_id)
 
 

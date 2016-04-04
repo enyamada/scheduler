@@ -3,6 +3,7 @@ from time import strptime, strftime
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
+
 import logging
 import logging.handlers
 import os
@@ -10,6 +11,8 @@ import time
 
 
 import MySQLdb
+import urllib2
+from urllib2 import HTTPError, URLError
 
 import aws
 from config import read_config
@@ -237,9 +240,9 @@ def process_notification (job_id):
        if status == "finished":
            logging.info ("Executing job %s user callback function: %s" % (job_id, callback(job_id)) )
            call_callback(job_id)
-           logging.info ( "Terminating job %s spot instance" % job_id) 
 
-           instance_id = job_db_data (job_id, "instance_id")
+           instance_id  = job_db_data (job_id, "instance_id")
+           logging.info ( "Terminating job %s spot instance %s" % (job_id, instance_id)) 
            aws.terminate_instance(instance_id)
 
            logging.info ( "Marking job %s as done" % job_id) 
@@ -270,7 +273,8 @@ def open_db_connection(config):
 
 def callback (job_id):
   
-    return job_db_data (job_id, "callback")
+    [ callback ] =  job_db_data (job_id, "callback")
+    return callback
 
 
 
