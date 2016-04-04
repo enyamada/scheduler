@@ -13,7 +13,7 @@ def create_spot_instance(config, job_id, sched_time, docker_image, env_vars):
 
 
     user_data = (
-       b"#!/bin/bash\n"
+       "#!/bin/bash\n"
        "touch /tmp/start.txt\n"
        "curl -i -H 'Content-Type: application/json'  'http://%s/v1/notifications/%s?status=started' -X PUT\n"
        "yum -y update\n"

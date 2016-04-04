@@ -29,11 +29,9 @@ def read_log_env_config (config):
    config["level"] = os.environ.get("LOG_LEVEL", config["level"])
 
 
-def read_config():
+def read_config(config_file):
 
-    CONFIG_FILE = 'scheduler.yaml'
-
-    with open (CONFIG_FILE, "r") as f:
+    with open (config_file, "r") as f:
         config = yaml.load (f)
 
     read_aws_env_config(config["aws"])

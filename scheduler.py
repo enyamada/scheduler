@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, abort, make_response, request, url_for
 from time import strptime, strftime
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
 
@@ -16,6 +16,7 @@ from urllib2 import HTTPError, URLError
 
 import aws
 from config import read_config
+import db
 
 
 
@@ -52,7 +53,7 @@ app = Flask(__name__)
 
 
 # POST /v1/jobs - schedule a new job
-# GET  /v1/jobs - list all scheduled jobs
+# GET  /v1/jobs - list all scheduled jobs (over the last 24h)
 # GET  /v1/jobs/xx - list status of a specific job
 # PUT  /v1/jobs/xx - change callback (or run_at)
 
@@ -74,16 +75,16 @@ def hello_world():
 
 
 
-def save_job_schedule (docker_image, stime, callback, env_vars):
+def save_job_schedule (db_conn, docker_image, stime, callback, env_vars):
 
-    cursor = Db.cursor()
+    cursor = db_conn.cursor()
 
     # Try to insert the new schedule into the database. If it fails, return -1, otherwise, return the scheduled job id.
     try:
        if callback == "":
-          sql = "INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ('%s', '%s', 'scheduled', '%s' )" % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, MySQLdb.escape_string(env_vars))
+          sql = "INSERT INTO jobs(run_at, docker_image, status, env_vars) VALUES ('%s', '%s', '%s', '%s' )" % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, STATUS_SCHEDULED, MySQLdb.escape_string(env_vars))
        else:
-          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES ("%s", "%s", "scheduled", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, env_vars, callback)
+          sql = 'INSERT INTO jobs(run_at, docker_image, status, env_vars, callback) VALUES ("%s", "%s", "%s", "%s", "%s")' % (stime.strftime('%Y-%m-%d %H:%M:%S'), docker_image, STATUS_SCHEDULED, env_vars, callback)
 
        logging.debug ("Saving job: %s" % sql)
        cursor.execute ( sql )
@@ -98,21 +99,6 @@ def save_job_schedule (docker_image, stime, callback, env_vars):
     id = cursor.fetchone()
     return id[0];
 
-
-def update_db (job_id, **kwargs):
-
-    cursor = Db.cursor()
-
-    set_clause = ""
-    for k in kwargs:
-        set_clause = set_clause + "%s='%s'," % (k, kwargs[k])
-
-    set_clause = set_clause[:-1]
-
-    sql = "UPDATE jobs SET %s WHERE id=%s" % (set_clause, job_id)
-    logging.debug ("Update db: %s" % sql)
-    cursor.execute (sql)
- 
 
 
 @app.route ('/v1/jobs', methods=['POST'])
@@ -153,13 +139,13 @@ def schedule_job():
     # Convert the env vars to a notation format to be accepeted by docker ("-e 'X1=v1' -e 'X2=v2' etc)
     env_vars = build_env_vars_docker_format (env_vars)
 
-    job_id = save_job_schedule (json["docker_image"], stime, callback, env_vars )
+    job_id = save_job_schedule (db_conn, json["docker_image"], stime, callback, env_vars )
     if job_id == -1:
         return make_response(jsonify({'error': 'Something went wrong when attempting to save data into database'}), 500)
 
     # Schedule the spot instance
     [ req_id, req_state, req_status_code ] = aws.create_spot_instance (config["aws"], job_id, stime, json["docker_image"], env_vars)
-    update_db (job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code)
+    db.update_db (db_conn, job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code)
 
     # Returns a json with the accepted json data and the job-id appended
     json["job_id"] = job_id
@@ -171,8 +157,8 @@ def schedule_job():
 def get_list():
 
     # Get a dict containing all the jobs
-    cursor = Db.cursor(MySQLdb.cursors.DictCursor)
-    cursor.execute ("SELECT * FROM jobs WHERE run_at > NOW()")
+    cursor = db_conn.cursor(MySQLdb.cursors.DictCursor)
+    cursor.execute ("SELECT * FROM jobs WHERE run_at > NOW() - INTERVAL 1 DAY")
 
     # Respond with a json containing all the data
     return jsonify (scheduled_jobs = cursor.fetchall()), 200
@@ -182,9 +168,8 @@ def get_list():
 @app.route ('/v1/jobs/<job_id>')
 def get_status(job_id) :
 
-
     # Get data about the specific job
-    cursor = Db.cursor(MySQLdb.cursors.DictCursor)
+    cursor = db_conn.cursor(MySQLdb.cursors.DictCursor)
     cursor.execute ("SELECT * FROM jobs WHERE id = %s" % job_id)
 
     # 404 if no such job was found
@@ -208,20 +193,21 @@ def update_job (job_id):
         return jsonify ({"Error": "Bad request. Make sure that the JSON posted is well formed."}), 400
 
     # Job exists and it's still time to change? (it's not already running or it's done?)
-    cursor = Db.cursor()
-    cursor.execute ("SELECT * FROM jobs WHERE id = %s AND status='scheduled'" % job_id)
+    cursor = db_conn.cursor()
+    cursor.execute ("SELECT * FROM jobs WHERE id = %s AND status='%s'" % (job_id, STATUS_SCHEDULED) )
     if cursor.rowcount == 0:
        return make_response(jsonify({'error': 'No job with such id was found or the job is already running or done'}), 404)
+    elif (not json.has_key("callback")):
+       return make_response(jsonify({'error': 'No callback was specified.'}), 400)
 
 
     # Try to update
     try:
-       cursor.execute ("UPDATE jobs SET callback='%s' WHERE id=%s" % (json["callback"], job_id))
+       db.update_db(db_conn, job_id, callback=json["callback"])
        return make_response(jsonify({'Success': 'Callback function updated to %s' % json["callback"]}), 200)
 
     except Exception as e:
        return make_response(jsonify({'Error': 'Something went wrong when updating DB - %s' % str (e)}), 500)
-
 
 
 
@@ -235,18 +221,18 @@ def process_notification (job_id):
 
     # Try to update
     try:
-       update_db (job_id, status=status)
+       db.update_db (db_conn, job_id, status=status)
 
        if status == "finished":
            logging.info ("Executing job %s user callback function: %s" % (job_id, callback(job_id)) )
            call_callback(job_id)
 
-           instance_id  = job_db_data (job_id, "instance_id")
+           instance_id  = db.job_db_data (db_conn, job_id, "instance_id")
            logging.info ( "Terminating job %s spot instance %s" % (job_id, instance_id)) 
            aws.terminate_instance(instance_id)
 
            logging.info ( "Marking job %s as done" % job_id) 
-           update_db (job_id, status='done')
+           db.update_db (db_conn, job_id, status='%s' % STATUS_DONE)
 
        return make_response(jsonify({'Success': 'Notification has been processed, status updated to %s' % status}), 200)
 
@@ -261,23 +247,12 @@ def process_notification (job_id):
 def not_found(error):
     return make_response(jsonify({'error': 'Not found'}), 404)
 
-def open_db_connection(config):
-
-   conn = MySQLdb.connect (config["host"], config["user"], config["secret"], config["db"])
-   conn.autocommit(True)
-   return conn
-
-
-
 
 
 def callback (job_id):
   
-    [ callback ] =  job_db_data (job_id, "callback")
+    [ callback ] =  db.job_db_data (db_conn, job_id, "callback")
     return callback
-
-
-
 
 
 
@@ -330,8 +305,8 @@ def check_jobs():
 
 
 
-    cursor = Db.cursor(MySQLdb.cursors.DictCursor)
-    cursor.execute ("SELECT * FROM jobs WHERE run_at <= NOW() AND status <> 'done' AND (req_state='active' OR req_state='open')")
+    cursor = db_conn.cursor(MySQLdb.cursors.DictCursor)
+    cursor.execute ("SELECT * FROM jobs WHERE run_at <= NOW() AND status <> '%s' AND (req_state='active' OR req_state='open')" % STATUS_DONE)
 
     rows = cursor.fetchall()
     for row in rows:
@@ -343,11 +318,11 @@ def check_jobs():
 
 
         if aws_req_state == 'open':
-            update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code)
+            db.update_db (db_conn, job_id, req_state=aws_req_state, req_status_code=aws_req_status_code)
 	elif aws_req_state == 'active':
-            update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
+            db.update_db (db_conn, job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
         elif aws_req_state == 'cancelled' or aws_req_state == 'failed':
-            update_db (job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
+            db.update_db (db_conn, job_id, req_state=aws_req_state, req_status_code=aws_req_status_code, instance_id=aws_instance_id)
 	elif aws_req_state == 'closed':
 	    rerun (job_id)
         else:
@@ -358,23 +333,19 @@ def check_jobs():
 
 
 def rerun (job_id): 
-    return 0
 
-
-
- 
     
-def job_db_data (job_id, *cols):
+    [ docker_image, env_vars ] = db.job_db_data (db_conn, job_id, "docker_image", "env_vars")
+    stime = datetime.now()+timedelta(minutes=1)
 
-    cursor = Db.cursor(MySQLdb.cursors.DictCursor)
-    cursor.execute ("SELECT * FROM jobs WHERE id=%s" % job_id)
-    row = cursor.fetchone()
- 
-    res = []
-    for col in cols:
-        res.append (row.get(col, None))
+    # Re-schedule the spot instance to run 1 minute from now
+    [ req_id, req_state, req_status_code ] = aws.create_spot_instance (config["aws"], job_id, stime, docker_image, env_vars)
+    db.update_db (db_conn, job_id, req_id=req_id, req_state=req_state, req_status_code=req_status_code, status="%s" % STATUS_RE_SCHEDULED, instance_id="", run_at=stime)
 
-    return res
+
+
+    
+    return 0
 
 
 
@@ -388,16 +359,16 @@ def call_callback (job_id):
         f.close()
     
     except Exception as e:
-        update_db (job_id, notes="Something went wrong when trying to callback %s: %s" % (url, e.message))
+        db.update_db (db_conn, job_id, notes="Something went wrong when trying to callback %s: %s" % (url, e.message))
 
     
     except URLError as e:
         logging.info ("Error when calling back job %s callback function (%s)" % (job_id, url) )
-        update_db (job_id, notes="Tried to callback %s but seems like an invalid url: %s" % (url, e.reason))
+        db.update_db (db_conn, job_id, notes="Tried to callback %s but seems like an invalid url: %s" % (url, e.reason))
 
     else: 
         logging.info ("Job %s callback function (%s) called successfully" % (job_id, url) )
-	update_db (job_id, notes="Called back %s sucessfully at %s" % (url, datetime.now()))
+	db.update_db (db_conn, job_id, notes="Called back %s sucessfully at %s" % (url, datetime.now()))
 
 
 
@@ -448,12 +419,16 @@ def setup_logging (config):
 
 if __name__ == '__main__':
 
+    STATUS_SCHEDULED = "scheduled"
+    STATUS_RE_SCHEDULED = "re-scheduled"
+    STATUS_DONE = "done"
 
-    config = read_config()
+    CONFIG_FILE="scheduler.yaml"
+    config = read_config(CONFIG_FILE)
     logging.debug ("Config read: %s" % config)
 
     setup_logging (config["log"])
-    Db = open_db_connection(config["db"])
+    db_conn = db.open_connection(config["db"])
 
     
     spot_sg_id = aws.create_spot_security_group(config["aws"]["sg-name"])
