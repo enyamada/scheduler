@@ -1,0 +1,24 @@
+aws:
+   ami-id: ami-c229c0a2
+   spot-price: 0.015
+   instance-type: m3.medium
+   key-name: se-devops-test
+   sg-name: spot-temp-sg-xx
+
+app:
+   polling-interval: 60
+
+
+db:
+   host: localhost
+   db: scheduler
+   secret: Pass&&wOrd
+   user: scheduler
+
+log:
+   file: /var/log/scheduler.log
+   level: warning
+   backup-count: 7
+   max-bytes: 5242880
+
+
