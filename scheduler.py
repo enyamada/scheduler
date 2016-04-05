@@ -430,7 +430,7 @@ def process_notification(job_id):
 
 
 @app.errorhandler(404)
-def not_found():
+def not_found(error):
     """
     404 handler
     """
