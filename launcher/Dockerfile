@@ -15,3 +15,4 @@ WORKDIR /root
 ADD aws/* /root/.aws/
 ADD *.py /root/
 ADD *.sh /root/
+CMD /root/launcher.py
