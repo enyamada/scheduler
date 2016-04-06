@@ -1,0 +1,5 @@
+ aws ec2 create-security-group --group-name http-in-open --desc "SG to make sure HTTP incoming traffic is allowed"
+{
+    "GroupId": "sg-870744e0"
+}
+
