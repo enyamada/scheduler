@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+
+"""
+This script launches a AWS instance that will run the scheduler server.
+"""
+
 import base64
 import sys
 import os
@@ -8,6 +14,10 @@ import botocore
 import ConfigParser
 
 def create_http_security_group(sg_name, options):
+    """
+    Creates (if doesnt already exist) a SG with the specified name and options
+    and returns its id. 
+    """
 
 
     sg_desc = "Security group to be applied to any spot instance running our schedule jobs"
@@ -45,6 +55,9 @@ def create_http_security_group(sg_name, options):
 
 
 def create_instance(sg_name, options):
+    """
+    Creates an AWS EC2 instance using the specified options
+    """
 
     client = boto3.client("ec2")
 
@@ -70,15 +83,13 @@ def create_instance(sg_name, options):
         if e.response['Error']['Code'] == 'InvalidKeyPair.NotFound':
             print "Key pair name(%s) was not accepted. " % key_name
             sys.exit(4)
-        print "OOO"
     
     instance_id = response["Instances"][0]["InstanceId"]
      
-#    instance_id = "i-39f5bae1"
     # Wait for the public dns name gets ready. This is normally quick
     public_dns_name = ""
     while public_dns_name == "":
-       print "trying"
+       print "Hold on..."
        sleep(10)
        response = client.describe_instances(InstanceIds=[instance_id])
        public_dns_name = response["Reservations"][0]["Instances"][0]["PublicDnsName"]
@@ -92,12 +103,15 @@ def print_help():
     print '  --aws-access-key-id <aws key id>'
     print '  --aws-secret-access-key <aws access key>'
     print ''
-    print 'All options are mandatory, except if the corresponding env var was provided'
+    print 'All options are mandatory, except if the corresponding env vars were provided'
     print '(AWS_KEY_NAME, AWS_ACCESS_KEY_ID, AWS_ACCESS_KEY_NAME)'
 
 
 def get_options(argv):
-
+    """ 
+    Get the options provided as command line args. If any of them were not specified,
+    then try to find them out using other means.
+    """
 
     key_name = ""
     aws_access_key_id = ""
@@ -143,6 +157,11 @@ def get_options(argv):
 
 def get_aws_credentials():
 
+    """
+    Gets the AWS credentials to be used. First look if env vars were defined,
+    then search the ~/.aws/credentials file. Bail out if nothing was found.
+    """
+
     # First: Are there env vars?
     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
     aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -172,13 +191,38 @@ def main(argv):
 
     options = get_options(argv)
 
+    # Create a new security group to ensure that HTTP incoming traffic will be allowed
     sg_name = "http-in-sg-tmp"
-    key_name = "se-devops-test"
     create_http_security_group(sg_name, options)
     
+    # Create a new instance
     [instance_id, host_name] = create_instance(sg_name, options)
     
-    print "Enjoy: Your server is %s" % (host_name)
+    print "Enjoy: Your server is %s. Please allow 10 min approx before testing." % (host_name)
+    print
+    print "Examples:"
+    print
+    print "To schedule a new job to run 'hello-world' container at YYYY-MM-DD HH:MM:SS (GMT)"
+    print "(passing the env1 and env2 vars) and that should callback http://xxx.com when finished:"
+    print
+    print "curl -i -H \"Content-Type: application/json\" " \
+          "http://%s/v1/jobs -X POST -d " \
+          "'{\"docker_image\": \"hello-world\", \"datetime\": \"YYYY-MM-DD HH:MM:SS\", "  \
+          "\"callback\":\"http://xxx.com\", \"env_vars\":{\"env1\": \"v1\", \"env2\": \"v2\"}}'" \
+          % host_name
+    print
+    print
+    print "To check a job status:"
+    print
+    print "curl -i http://%s/v1/jobs/<job-id>" % host_name
+    print
+    print
+    print "To update a job callback to http://yyy.com:"
+    print
+    print "curl -i -H \"Content-Type: application/json\" " \
+          "http://%s/v1/jobs/<job-id> -X PUT -d " \
+          "'{\"callback\":\"http://yyy.com\"}'" % host_name
+
 
  
 
