@@ -1,6 +1,0 @@
-#!/bin/bash
-yum update -y
-yum install docker -y
-service docker start
-docker run --name scheduler-db  -v /var/lib/mysql:/var/lib/mysql -e MYSQL_ROOT_PASSWORD=yagg27 -d enyamada/scheduler-db
-docker run --name scheduler-web -e LOG_LEVEL=debug -e AWS_SPOT_PRICE=0.014 -v /var/log/:/var/log/ -d -p 80:80  --link scheduler-db:mysql enyamada/scheduler-web
