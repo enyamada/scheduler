@@ -33,4 +33,5 @@ can be found in the [module docstrings] (https://github.com/enyamada/scheduler/b
 
 * No authentication was implemented. 
 * The user provided API parameters are not being carefully examined.
-* 
+* Flask is serving all http requests (listening on tcp/80 port). Probably a better solution would be using apache (or similar) to serve the "generic" requests and proxy only the REST calls to Flask. 
+* etc
