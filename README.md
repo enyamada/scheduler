@@ -7,7 +7,7 @@ This is my solution to the proposed jobs scheduler problem.
 
 This command will create a new EC2 instance running a scheduler server:
 ```
-sudo docker run -it -e AWS_ACCESS_KEY_ID=XXX -e AWS_KEY_NAME=my-key-name -e AWS_SECRET_ACCESS_KEY=YYYY  enyamada/scheduler-launcher
+sudo docker run -it -e AWS_ACCESS_KEY_ID=XXX -e AWS_KEY_NAME=my-key-name -e AWS_SECRET_ACCESS_KEY=YYYY  enyamada/scheduler-launcher:1.0
 ```
 
 All the necessary AWS resources (including the spot instance requests to be launched by the scheduler) will use the mentioned credentials and key name. The region to be used will be us-west-2.
