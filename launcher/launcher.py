@@ -57,18 +57,23 @@ def create_http_security_group(sg_name, options):
 
 def create_instance(sg_name, options):
     """
-    Creates an AWS EC2 instance using the specified options
+    Creates an AWS EC2 instance using the specified options. Its instance id
+    and the public fqdn should be returned.
     """
 
     client = boto3.client("ec2")
 
-    txt = open("my-init.sh")
+    # The instance should be started up with a script that will install docker and
+    # then start 2 containers (one for the db server, another for the scheduler server)
+    DEPLOY_SCRIPT = "my-init.sh"
+    txt = open(DEPLOY_SCRIPT)
     user_data = txt.read()
     user_data = user_data % (options["aws_access_key_id"], options[
                              "aws_secret_access_key"])
 
     key_name = options["key_name"]
 
+    # Try to launch an ec2 instance
     try:
         response = client.run_instances(
             ImageId="ami-c229c0a2",
@@ -80,6 +85,7 @@ def create_instance(sg_name, options):
             UserData=user_data
         )
 
+    # Bail out if there's something wrong with the key pair supplied
     except botocore.exceptions.ClientError as e:
         if e.response['Error']['Code'] == 'InvalidKeyPair.NotFound':
             print "Key pair name(%s) was not accepted. " % key_name
@@ -87,7 +93,8 @@ def create_instance(sg_name, options):
 
     instance_id = response["Instances"][0]["InstanceId"]
 
-    # Wait for the public dns name gets ready. This is normally quick
+    # Wait for the public dns name gets ready. This is normally unavailable
+    # right after the instance creation, but it shouldnt take too long
     public_dns_name = ""
     while public_dns_name == "":
         print "Hold on..."
@@ -101,8 +108,8 @@ def create_instance(sg_name, options):
 
 def print_help():
 
-    """ 
-    Print help 
+    """
+    Print help
     """
 
     print 'Options: '
@@ -192,17 +199,10 @@ def get_aws_credentials():
         sys.exit(2)
 
 
-def main(argv):
-
-    options = get_options(argv)
-
-    # Create a new security group to ensure that HTTP incoming traffic will be
-    # allowed
-    sg_name = "http-in-sg-tmp"
-    create_http_security_group(sg_name, options)
-
-    # Create a new instance
-    [instance_id, host_name] = create_instance(sg_name, options)
+def print_instructions(host_name):
+    """
+    Print instructions on how to proceed
+    """
 
     print "Enjoy: Your server is %s. Please allow 10 min approx before testing." % (host_name)
     print
@@ -228,6 +228,23 @@ def main(argv):
     print "curl -i -H \"Content-Type: application/json\" " \
           "http://%s/v1/jobs/<job-id> -X PUT -d " \
           "'{\"callback\":\"http://yyy.com\"}'" % host_name
+
+
+
+def main(argv):
+
+    options = get_options(argv)
+
+    # Create a new security group to ensure that HTTP incoming traffic will be
+    # allowed
+    sg_name = "http-in-sg-tmp"
+    create_http_security_group(sg_name, options)
+
+    # Create an instance that will run the scheduler
+    [instance_id, host_name] = create_instance(sg_name, options)
+
+    # print how to proceed
+    print_instructions(host_name)
 
 
 if __name__ == "__main__":

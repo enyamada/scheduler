@@ -95,14 +95,12 @@
 """
 
 
-from flask import Flask, jsonify, make_response, request
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
-
+from flask import Flask, jsonify, make_response, request
 
 import logging
 import logging.handlers
-
 
 import MySQLdb
 import urllib2
@@ -125,9 +123,6 @@ import db
 
 app = Flask(__name__)
 
-
-# TODO
-# Timezone
 
 
 
@@ -484,7 +479,8 @@ def callback_function(job_id):
 
 def check_jobs():
     """
-    This function is called by apscheduler every 60s (configurable).
+    This function is called by apscheduler every 60s (configurable via
+    "APP_POLLING_INTERVAL" environment variable).
 
     For each job that is ready to run and still needs to be processed
     (status is not 'done'), this function polls AWS to get
